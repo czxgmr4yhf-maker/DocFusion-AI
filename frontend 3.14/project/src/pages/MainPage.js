@@ -33,6 +33,39 @@ function setStatus(text, type = 'info') {
     }, 3000);
 }
 
+function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = e => reject(e.target.error);
+        reader.readAsText(file, 'UTF-8');
+    });
+}
+
+function readFileAsArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = e => reject(e.target.error);
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+function extractFieldsFromText(text) {
+    const lines = text.split(/\r?\n/);
+    const fields = new Set();
+    lines.forEach(line => {
+        line = line.trim();
+        if (line) {
+            const firstWord = line.split(/\s+/)[0];
+            if (firstWord && firstWord.length > 0 && firstWord.length < 30) {
+                fields.add(firstWord);
+            }
+        }
+    });
+    return Array.from(fields);
+}
+
 function isValidFileType(file) {
     const fileName = file.name || '';
     const dotIndex = fileName.lastIndexOf('.');
@@ -193,6 +226,76 @@ function openPreview(file) {
     }
     else {
         previewContent.innerHTML = '<div class="preview-placeholder">🔍 该文件类型暂不支持在线预览 (支持 .txt .md .docx .xlsx)</div>';
+    }
+}
+
+async function extractFields(file) {
+    const fileName = file.name;
+    const ext = fileName.slice(fileName.lastIndexOf('.')).toLowerCase();
+    
+    // 显示加载中
+    document.getElementById('resultTitle').textContent = `字段抽取: ${fileName}`;
+    document.getElementById('resultContent').innerHTML = '<div class="preview-placeholder">抽取中...</div>';
+    document.getElementById('resultModal').classList.add('active');
+    centerResultWindow();
+
+    let fields = [];
+
+    try {
+        if (ext === '.txt' || ext === '.md') {
+            const text = await readFileAsText(file);
+            fields = extractFieldsFromText(text);
+        } else if (ext === '.docx') {
+            const arrayBuffer = await readFileAsArrayBuffer(file);
+            const result = await mammoth.extractRawText({ arrayBuffer });
+            fields = extractFieldsFromText(result.value);
+        } else if (ext === '.xlsx') {
+            const arrayBuffer = await readFileAsArrayBuffer(file);
+            const workbook = XLSX.read(new Uint8Array(arrayBuffer), { type: 'array' });
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            if (jsonData.length > 0) {
+                fields = jsonData[0].filter(cell => cell != null && cell.toString().trim() !== '');
+            } else {
+                fields = [];
+            }
+        } else {
+            fields = ['不支持的文件类型'];
+        }
+
+        // 去重并限制数量
+        fields = [...new Set(fields)].slice(0, 50);
+
+        // 构建结果显示
+        const fieldsHtml = fields.map(f => `<div style="padding: 4px 8px; background: #f1f5f9; border-radius: 20px; margin: 4px;">${escapeHtml(f)}</div>`).join('');
+        const sendButtonId = 'sendFieldsBtn_' + Date.now();
+        document.getElementById('resultContent').innerHTML = `
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px;">${fieldsHtml}</div>
+            <div style="display: flex; gap: 10px; align-items: center; border-top: 1px solid #e2e8f0; padding-top: 16px;">
+                <input type="text" id="extraParamInput" class="command-input" placeholder="额外参数(可选)" style="flex:1;">
+                <button class="btn btn-primary" id="${sendButtonId}">发送字段结果</button>
+            </div>
+        `;
+
+        // 绑定发送按钮事件
+        document.getElementById(sendButtonId).addEventListener('click', async () => {
+            const extraParam = document.getElementById('extraParamInput').value.trim();
+            const { sendExtractedFields } = await import('../api/index.js');
+            const result = await sendExtractedFields({
+                fileName: file.name,
+                fields: fields,
+                extra: extraParam
+            });
+            if (result.success) {
+                setStatus(`✅ 字段结果发送成功，共 ${fields.length} 个字段`, 'success');
+            } else {
+                setStatus('❌ 发送失败: ' + (result.message || ''), 'error');
+            }
+        });
+
+    } catch (err) {
+        document.getElementById('resultContent').innerHTML = `<div class="preview-placeholder">❌ 抽取失败: ${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -372,6 +475,16 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             const index = deleteBtn.getAttribute('data-index');
             if (index !== null) removeFileByIndex(parseInt(index, 10));
+            return;
+        }
+        const extractBtn = e.target.closest('.extract-btn');
+        if (extractBtn) {
+            e.preventDefault();
+            const index = extractBtn.getAttribute('data-index');
+            if (index !== null) {
+                const fileItem = fileArray[parseInt(index, 10)];
+                if (fileItem) extractFields(fileItem.file);
+            }
             return;
         }
         const previewBtn = e.target.closest('.preview-text-btn');

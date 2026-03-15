@@ -32,9 +32,9 @@ export function renderFileList(fileArray) {
                     </div>
                 </div>
                 <div class="file-actions-btn">
-                    <button class="preview-text-btn" data-index="${index}" title="预览文件">预览</button>
-                    <button class="delete-btn" data-index="${index}" title="移除">✕</button>
-                </div>
+                <button class="preview-text-btn" data-index="${index}" title="预览文件">预览</button>
+                <button class="extract-btn" data-index="${index}" title="抽取字段">🔍抽取</button>
+                <button class="delete-btn" data-index="${index}" title="移除">✕</button>
             </div>
         `;
     });

@@ -170,3 +170,13 @@ uploadFiles
 2. 继续完善字段抽取规则
 3. 优化接口返回结构
 4. 完成完整前后端联调测试
+
+day07
+今日完成：
+1.后端内容自动处理打通（不依靠前端按钮）：
+完成 /upload 接口改造，实现文件上传后自动触发 parse 与 extract。实现流程：upload → parse → extract → fields，任务状态可自动更新为 extracted
+2.接口联调完成
+/tasks/{task_id} 可正确返回任务状态
+/fields/{task_id} 可正确返回解析与字段结果
+已验证数据库写入正常
+3.后续计划，配合其他成员进度，完成完整流程

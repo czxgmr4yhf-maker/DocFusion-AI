@@ -20,8 +20,7 @@ from parser.doc_parser import DocumentParser
 parser = DocumentParser()
 
 
-@router.post("/parse/{task_id}")
-def parse_task(task_id: int, db: Session = Depends(get_db)):
+def run_parse(task_id: int, db: Session):
     task = db.query(Task).filter(Task.id == task_id).first()
 
     if not task:
@@ -57,3 +56,8 @@ def parse_task(task_id: int, db: Session = Depends(get_db)):
 
         logger.error(f"任务解析失败: task_id={task.id}, error={str(e)}")
         raise HTTPException(status_code=500, detail=f"解析失败: {str(e)}")
+
+
+@router.post("/parse/{task_id}")
+def parse_task(task_id: int, db: Session = Depends(get_db)):
+    return run_parse(task_id, db)

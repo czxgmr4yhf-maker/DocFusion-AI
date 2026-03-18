@@ -9,9 +9,7 @@ from app.db.models import DocumentField, Task
 router = APIRouter()
 
 
-@router.post("/extract/{task_id}")
-def extract_task(task_id: int, db: Session = Depends(get_db)):
-
+def run_extract(task_id: int, db: Session):
     # 1 查询任务
     task = db.query(Task).filter(Task.id == task_id).first()
 
@@ -56,7 +54,13 @@ def extract_task(task_id: int, db: Session = Depends(get_db)):
     if m:
         phone = m.group(0)
 
-    # 4 写入数据库
+    # 4 避免重复插入同一个 task_id 的结果
+    old_field = db.query(DocumentField).filter(DocumentField.task_id == task_id).first()
+    if old_field:
+        db.delete(old_field)
+        db.commit()
+
+    # 5 写入数据库
     field_data = DocumentField(
         task_id=task_id,
         doc_id=parse_data.get("doc_id", f"doc_{task_id}"),
@@ -72,8 +76,18 @@ def extract_task(task_id: int, db: Session = Depends(get_db)):
 
     db.add(field_data)
     db.commit()
+    db.refresh(field_data)
 
     return {
         "message": "字段抽取完成",
-        "task_id": task_id
+        "task_id": task_id,
+        "project_name": project_name,
+        "project_leader": project_leader,
+        "organization_name": organization_name,
+        "phone": phone
     }
+
+
+@router.post("/extract/{task_id}")
+def extract_task(task_id: int, db: Session = Depends(get_db)):
+    return run_extract(task_id, db)

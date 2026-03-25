@@ -207,3 +207,33 @@ export function sendExtractedFields(payload) {
         }, 500);
     });
 }
+
+/**
+ * 后端解析文件（直接发送文件到后端，获取解析结果）
+ * @param {File} file
+ * @returns {Promise<{success: boolean, result?: string, message?: string}>}
+ */
+export function parseFileByBackend(file) {
+    // ========= 未来后端对接点 =========
+    // const formData = new FormData();
+    // formData.append('file', file);
+    // return fetch('/api/parse-file', {
+    //   method: 'POST',
+    //   body: formData
+    // })
+    // .then(res => res.json())
+    // .then(data => ({ success: true, result: data.result }))
+    // .catch(err => ({ success: false, message: err.message }));
+    // =================================
+    return new Promise(resolve => {
+        setTimeout(() => {
+            // 模拟后端解析结果（纯文本）
+            const resultText = `后端解析完成！文件「${file.name}」\n字段列表: 姓名, 年龄, 部门, 职位\n解析时间: ${new Date().toLocaleString()}`;
+            console.log('【后端解析返回】', resultText);
+            resolve({ 
+                success: true, 
+                result: resultText
+            });
+        }, 800);
+    });
+}

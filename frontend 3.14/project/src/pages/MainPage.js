@@ -4,9 +4,10 @@ import { renderPreviewModal } from '../components/PreviewModal.js';
 import { renderResultModal } from '../components/ResultModal.js';
 import { renderCommandInput } from '../components/CommandInput.js';
 import { renderFileList } from '../components/FileList.js';
-import { uploadFiles, executeCommand, getTask, getFields } from '../api/index.js';
+import { uploadFiles, executeCommand, getTask, getFields , parseFileByBackend} from '../api/index.js';
 import { escapeHtml, toggleFullscreen } from '../utils/helpers.js';
 
+// 全局状态
 let fileArray = [];
 let currentAvatar = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'40\' height=\'40\' viewBox=\'0 0 24 24\' fill=\'%2394a3b8\'%3E%3Cpath d=\'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z\'/%3E%3C/svg%3E';
 let currentName = '旅行者';
@@ -226,6 +227,79 @@ function openPreview(file) {
     else {
         previewContent.innerHTML = '<div class="preview-placeholder">🔍 该文件类型暂不支持在线预览 (支持 .txt .md .docx .xlsx)</div>';
     }
+}
+
+async function handleAllFilesBackendParse() {
+    if (fileArray.length === 0) {
+        setStatus('⚠️ 没有可上传的文件', 'error');
+        return;
+    }
+
+    // 显示加载中
+    document.getElementById('resultTitle').textContent = `批量解析 (共 ${fileArray.length} 个文件)`;
+    document.getElementById('resultContent').innerHTML = '<div class="preview-placeholder">解析中...</div>';
+    document.getElementById('resultModal').classList.add('active');
+    centerResultWindow();
+
+    const results = [];
+    for (let i = 0; i < fileArray.length; i++) {
+        const file = fileArray[i].file;
+        setStatus(`正在解析: ${file.name} (${i+1}/${fileArray.length})`, 'info');
+        
+        // 更新结果窗口显示进度
+        document.getElementById('resultContent').innerHTML = `
+            <div class="preview-placeholder">
+                正在解析: ${escapeHtml(file.name)} (${i+1}/${fileArray.length})<br>
+                请稍候...
+            </div>
+        `;
+
+        try {
+            const { parseFileByBackend } = await import('../api/index.js');
+            const result = await parseFileByBackend(file);
+            if (result.success) {
+                results.push({
+                    fileName: file.name,
+                    success: true,
+                    result: result.result
+                });
+            } else {
+                results.push({
+                    fileName: file.name,
+                    success: false,
+                    error: result.message
+                });
+            }
+        } catch (err) {
+            results.push({
+                fileName: file.name,
+                success: false,
+                error: err.message
+            });
+        }
+    }
+
+    // 汇总展示所有结果
+    let resultHtml = `<div style="background: #f0f9ff; padding: 12px; border-radius: 8px; margin-bottom: 16px;">
+                        <div style="font-weight: 600;">📊 批量解析完成</div>
+                        <div>共 ${fileArray.length} 个文件，成功 ${results.filter(r => r.success).length} 个，失败 ${results.filter(r => !r.success).length} 个</div>
+                       </div>`;
+    
+    results.forEach((res, idx) => {
+        resultHtml += `
+            <div style="margin-bottom: 16px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+                <div style="background: ${res.success ? '#f1f5f9' : '#fee2e2'}; padding: 8px 12px; font-weight: 600;">
+                    📄 ${escapeHtml(res.fileName)} ${res.success ? '✅' : '❌'}
+                </div>
+                <div style="padding: 12px;">
+                    ${res.success ? `<pre style="white-space: pre-wrap; font-family: monospace; margin: 0;">${escapeHtml(res.result)}</pre>` : `<div style="color: #b91c1c;">❌ 解析失败: ${escapeHtml(res.error)}</div>`}
+                </div>
+            </div>
+        `;
+    });
+
+    document.getElementById('resultContent').innerHTML = resultHtml;
+    setStatus(`✅ 批量解析完成，成功 ${results.filter(r => r.success).length} 个文件`, 'success');
 }
 
 async function extractFields(file) {
@@ -486,6 +560,17 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return;
         }
+        //后端解析
+        const backendParseBtn = e.target.closest('.backend-parse-btn');
+        if (backendParseBtn) {
+            e.preventDefault();
+            const index = backendParseBtn.getAttribute('data-index');
+            if (index !== null) {
+                const fileItem = fileArray[parseInt(index, 10)];
+                if (fileItem) handleBackendParse(fileItem.file);
+            }
+            return;
+        }
         const previewBtn = e.target.closest('.preview-text-btn');
         if (previewBtn) {
             e.preventDefault();
@@ -562,6 +647,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     elements.executeBtn.addEventListener('click', handleExecuteCommand);
+    const globalParseBtn = document.getElementById('globalParseBtn');
+    if (globalParseBtn) {
+        globalParseBtn.addEventListener('click', () => {
+            handleAllFilesBackendParse();
+        });
+    }
     elements.commandInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') handleExecuteCommand();
     });

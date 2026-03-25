@@ -63,3 +63,120 @@ day03
 
 当前第一版先按字段字典里的首批字段做了基础支持，后续可以继续扩展更多字段。
 
+day04
+今天主要完成了后端整合，明确了 parser、extract、matcher 和 backend 各模块的作用，并确认自己当前的核心任务是把这些模块通过 FastAPI 接口串联起来。之后完成了上传与任务查询链路的验证，确认 /upload 和 /tasks/{task_id} 可以正常使用。
+
+完成了解析模块接入。原来 /parse/{task_id} 使用的是模拟解析数据，今天将其替换为真实调用 parser/doc_parser.py，实现了对实际上传文档的解析，并将解析结果写回任务记录。这样后端已经能够完成“上传文件 → 解析文档”的真实流程。
+
+随后对抽取模块进行了联调调整。将 /extract/{task_id} 的输入从“直接读取原文件”改为“读取 /parse 后写入的解析结果”，保证抽取逻辑能够基于统一的 raw_text / paragraphs / tables 继续处理。之后成功打通了 /extract/{task_id} 和 /fields/{task_id}，实现了解析结果落库、字段抽取落库以及字段查询。
+
+最后完成了匹配模块接入。新增了 /match/{task_id} 接口，将 matcher/semantic_matcher.py 接入后端，并成功解决了缺少 sentence-transformers 依赖的问题。现在后端已经能够跑通：upload -> parse -> extract -> fields -> match
+虽然当前测试文档由于抽取结果为空，导致 /match/{task_id} 返回“当前没有可匹配的字段”，但这说明整条接口链路已经贯通，问题应该在上游抽取规则，而不是系统整合本身。
+
+day05
+今天主要围绕项目的前后端联调展开，完成了后端接口梳理、Apifox接口文档建立、本地联调测试以及前端 3.14 版本与后端接口的初步对接。
+完成了前端 3.14 版本的初步联调。排查过程中发现，前端原本使用的是模拟上传逻辑（mock），并未真正请求后端接口。对此，已对前端代码进行了修改，将上传逻辑改为真实调用后端接口，并完成了以下适配工作：
+1.将前端上传按钮从“模拟上传”改为“上传文件”；
+2.将 src/api/index.js 中的 mock 上传逻辑替换为真实 fetch 请求；
+3.新增了任务查询、字段查询等接口封装；
+4.在 MainPage.js 中完成上传成功后自动获取 task_id、查询任务状态、查询字段结果的前端流程适配；
+5.处理了浏览器跨域问题，给后端添加了 CORS 配置，保证前端页面能够正常请求本地 FastAPI 服务。
+当前前端已能够成功调用后端 POST /upload 和 GET /tasks/{task_id}，后端日志中可见 200 OK 返回，说明前后端基础链路已经打通。
+最后，对 /fields/{task_id} 返回 404 的原因进行了定位分析。确认并非接口故障，而是因为当前前端流程尚未执行：
+POST /parse/{task_id}
+POST /extract/{task_id}
+因此数据库中还没有对应 DocumentField 数据，导致查询字段结果时返回 404。后续计划采用与前端沟通的“方案一”，由前端负责人在现有代码基础上补齐 parse -> extract -> fields 的完整调用链路，完成最终页面展示流程。
+
+day06
+ 一、后端接口测试
+
+今日对文档处理流程进行了完整测试，验证后端接口链路是否正常工作。
+
+当前后端接口完整流程为：
+
+/upload
+→ /parse/{task_id}
+→ /extract/{task_id}
+→ /fields/{task_id}
+
+测试过程：
+
+1. 通过 Swagger (/docs) 调用 /upload 上传测试文件
+2. 成功返回 task_id
+3. 调用 /parse/{task_id} 完成文档解析
+4. 调用 /extract/{task_id} 完成字段抽取
+5. 调用 /fields/{task_id} 成功获取字段结果
+
+测试数据示例：
+
+项目名称：智慧文档检索系统  
+项目负责人：河海大学  
+申报单位：河海大学计算机与软件学院  
+联系电话：111111111  
+
+返回字段结果：
+
+- project_name：智慧文档检索系统
+- project_leader：河海大学
+- organization_name：河海大学计算机与软件学院
+- phone：111111111
+
+说明后端解析与字段抽取功能正常。
+
+---
+
+### 二、前后端联调情况
+
+已启动前端页面进行接口联调，并通过浏览器 Network 面板观察请求情况。
+
+当前前端上传流程为：
+
+uploadFiles
+→ getTask
+→ getFields
+
+即：
+
+/upload
+→ /tasks/{task_id}
+→ /fields/{task_id}
+
+但根据后端当前设计，完整流程应为：
+
+/upload
+→ /parse/{task_id}
+→ /extract/{task_id}
+→ /fields/{task_id}
+
+因此前端目前未调用 parse 与 extract 两个接口，可能导致字段结果无法正常返回。
+
+该问题已在日志中记录，待前端补充接口调用后继续联调。
+
+---
+
+### 三、今日完成工作
+
+1. 完成后端文档解析与字段抽取流程测试
+2. 验证 upload → parse → extract → fields 接口链路
+3. 与前端页面进行初步联调
+4. 通过浏览器 Network 面板定位接口调用情况
+5. 确认前端当前缺少 parse 与 extract 调用
+
+---
+
+### 四、后续计划
+
+1. 配合前端补充 parse 与 extract 接口调用
+2. 继续完善字段抽取规则
+3. 优化接口返回结构
+4. 完成完整前后端联调测试
+
+day07
+今日完成：
+1.后端内容自动处理打通（不依靠前端按钮）：
+完成 /upload 接口改造，实现文件上传后自动触发 parse 与 extract。实现流程：upload → parse → extract → fields，任务状态可自动更新为 extracted
+2.接口联调完成
+/tasks/{task_id} 可正确返回任务状态
+/fields/{task_id} 可正确返回解析与字段结果
+已验证数据库写入正常
+3.后续计划，配合其他成员进度，完成完整流程

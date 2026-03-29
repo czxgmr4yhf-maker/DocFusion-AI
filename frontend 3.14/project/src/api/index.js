@@ -182,28 +182,29 @@ export function sendTableData(payload) {
 }
 
 /**
- * 发送抽取的字段结果
- * @param {Object} payload
- * @param {string} payload.fileName - 原文件名
- * @param {Array<string>} payload.fields - 抽取的字段数组
- * @param {string} payload.extra - 额外参数
- * @returns {Promise<{success: boolean, message?: string}>}
+ * 获取字段溯源信息
+ * @param {number|string} taskId
+ * @param {string} fieldName - 字段名，如 'project_name', 'project_leader', 'organization_name', 'phone'
+ * @returns {Promise<{success: boolean, data?: any, message?: string}>}
  */
-export function sendExtractedFields(payload) {
-    // ========= 未来后端对接点 =========
-    // return fetch('/api/extracted-fields', {
-    //   method: 'POST',
-    //   headers: { 'Content-Type': 'application/json' },
-    //   body: JSON.stringify(payload)
-    // })
-    // .then(res => res.json())
-    // .then(data => ({ success: true, ...data }))
-    // .catch(err => ({ success: false, message: err.message }));
-    // =================================
-    return new Promise(resolve => {
-        setTimeout(() => {
-            console.log('【发送抽取字段】', payload);
-            resolve({ success: true, message: '模拟发送成功' });
-        }, 500);
-    });
+export async function getFieldSource(taskId, fieldName) {
+    try {
+        const response = await fetch(`${BASE_URL}/fields/${taskId}/source/${fieldName}`, {
+            method: 'GET'
+        });
+        const text = await response.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch (e) {
+            throw new Error(`后端返回不是合法 JSON: ${text}`);
+        }
+        if (!response.ok) {
+            throw new Error(`查询溯源失败，状态码：${response.status}`);
+        }
+        return { success: true, data };
+    } catch (err) {
+        console.error('【获取字段溯源失败】', err);
+        return { success: false, message: err.message };
+    }
 }

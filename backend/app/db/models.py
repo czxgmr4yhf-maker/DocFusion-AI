@@ -35,5 +35,22 @@ class DocumentField(Base):
     organization_name = Column(String, nullable=True)
     phone = Column(String, nullable=True)
 
+    # ===== 字段来源追溯信息 =====
+    project_name_source_file = Column(String, nullable=True)
+    project_name_source_paragraph = Column(Integer, nullable=True)
+    project_name_source_text = Column(Text, nullable=True)
+
+    project_leader_source_file = Column(String, nullable=True)
+    project_leader_source_paragraph = Column(Integer, nullable=True)
+    project_leader_source_text = Column(Text, nullable=True)
+
+    organization_name_source_file = Column(String, nullable=True)
+    organization_name_source_paragraph = Column(Integer, nullable=True)
+    organization_name_source_text = Column(Text, nullable=True)
+
+    phone_source_file = Column(String, nullable=True)
+    phone_source_paragraph = Column(Integer, nullable=True)
+    phone_source_text = Column(Text, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)

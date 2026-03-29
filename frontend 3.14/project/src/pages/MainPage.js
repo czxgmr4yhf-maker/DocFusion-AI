@@ -312,6 +312,18 @@ document.addEventListener('DOMContentLoaded', () => {
         ${renderProfileModal()}
         ${renderPreviewModal()}
         ${renderResultModal()}
+        <!-- 新增字段溯源模态框 -->
+        <div class="modal" id="sourceModal">
+            <div class="modal-content" style="max-width: 600px;">
+                <div class="preview-header">
+                    <span id="sourceModalTitle">字段溯源</span>
+                    <button class="delete-btn" id="closeSourceModalBtn" style="font-size:1.5rem;">&times;</button>
+                </div>
+                <div class="preview-content" id="sourceContent" style="max-height: 400px;">
+                    <!-- 溯源信息将显示在这里 -->
+                </div>
+            </div>
+        </div>
     `;
 
     elements = {
@@ -338,8 +350,46 @@ document.addEventListener('DOMContentLoaded', () => {
         resultModal: document.getElementById('resultModal'),
         closeResultBtn: document.getElementById('closeResultBtn'),
         fullscreenResultBtn: document.getElementById('fullscreenResultBtn'),
-        resultModalContent: document.getElementById('resultModalContent')
+        resultModalContent: document.getElementById('resultModalContent'),
+        // 新增：溯源模态框相关元素
+        sourceModal: document.getElementById('sourceModal'),
+        closeSourceModalBtn: document.getElementById('closeSourceModalBtn'),
+        sourceContent: document.getElementById('sourceContent'),
+        sourceModalTitle: document.getElementById('sourceModalTitle')
     };
+
+    document.body.addEventListener('click', async (e) => {
+        const target = e.target.closest('.source-field');
+        if (!target) return;
+        const taskId = target.getAttribute('data-task-id');
+        const fieldName = target.getAttribute('data-field-name');
+        if (!taskId || !fieldName) return;
+
+        // 显示加载状态
+        const sourceModal = document.getElementById('sourceModal');
+        const sourceContent = document.getElementById('sourceContent');
+        const sourceModalTitle = document.getElementById('sourceModalTitle');
+        sourceModalTitle.textContent = `字段溯源: ${fieldName}`;
+        sourceContent.innerHTML = '<div class="preview-placeholder">加载中...</div>';
+        sourceModal.classList.add('active');
+
+        // 调用溯源接口
+        const { getFieldSource } = await import('../api/index.js');
+        const result = await getFieldSource(taskId, fieldName);
+        if (result.success) {
+            const data = result.data;
+            let html = `
+                <div style="margin-bottom: 12px;"><strong>来源文件：</strong> ${escapeHtml(data.source_file || '未知')}</div>
+                <div style="margin-bottom: 12px;"><strong>所在段落：</strong></div>
+                <pre style="background:#f8fafc; padding:12px; border-radius:8px; margin-bottom:12px;">${escapeHtml(data.paragraph || '无')}</pre>
+                <div style="margin-bottom: 12px;"><strong>原始文本：</strong></div>
+                <pre style="background:#f8fafc; padding:12px; border-radius:8px;">${escapeHtml(data.original_text || '无')}</pre>
+            `;
+            sourceContent.innerHTML = html;
+        } else {
+            sourceContent.innerHTML = `<div class="preview-placeholder">❌ 获取溯源失败: ${escapeHtml(result.message)}</div>`;
+        }
+    });
 
     updateProfileUI();
 
@@ -495,21 +545,22 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
     `;
 
-    allFields.forEach(field => {
-        resultHtml += `
-            <div style="margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
-                <div style="background: ${field.success ? '#f1f5f9' : '#fee2e2'}; padding: 8px 12px; font-weight: 600;">
-                    📄 ${escapeHtml(field.fileName)} ${field.success ? '✅' : '❌'}
-                </div>
+   allFields.forEach(field => {
+    const taskId = field.data.task_id;  // 确保后端返回中包含 task_id
+    resultHtml += `
+        <div style="margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+            <div style="background: ${field.success ? '#f1f5f9' : '#fee2e2'}; padding: 8px 12px; font-weight: 600;">
+                📄 ${escapeHtml(field.fileName)} ${field.success ? '✅' : '❌'}
+            </div>
                 <div style="padding: 12px;">
                     ${field.success ? `
-                        <p><strong>任务ID：</strong>${data.task_id ?? ''}</p>
-                        <p><strong>文档ID：</strong>${data.doc_id ?? ''}</p>
-                        <p><strong>文档类型：</strong>${data.doc_type ?? ''}</p>
-                        <p><strong>项目名称：</strong>${data.project_name ?? ''}</p>
-                        <p><strong>项目负责人：</strong>${data.project_leader ?? ''}</p>
-                        <p><strong>机构名称：</strong>${data.organization_name ?? ''}</p>
-                        <p><strong>联系电话：</strong>${data.phone ?? ''}</p>
+                        <p><strong>任务ID：</strong><span class="source-field" data-task-id="${taskId}" data-field-name="task_id" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${data.task_id ?? ''}</p></span>
+                        <p><strong>文档ID：</strong><span class="source-field" data-task-id="${taskId}" data-field-name="doc_id" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${data.doc_id ?? ''}</p>
+                        <p><strong>文档类型：</strong> <span class="source-field" data-task-id="${taskId}" data-field-name="doc_type" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${data.doc_type ?? ''}</p>
+                        <p><strong>项目名称：</strong> <span class="source-field" data-task-id="${taskId}" data-field-name="project_name" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${data.project_name ?? ''}</p>
+                        <p><strong>项目负责人：</strong> <span class="source-field" data-task-id="${taskId}" data-field-name="project_leader" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${data.project_leader ?? ''}</p>
+                        <p><strong>机构名称：</strong> <span class="source-field" data-task-id="${taskId}" data-field-name="organization_name" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${data.organization_name ?? ''}</p>
+                        <p><strong>联系电话：</strong> <span class="source-field" data-task-id="${taskId}" data-field-name="phone" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${data.phone ?? ''}</p>
                         <details>
                             <summary style="cursor:pointer; color:#3b82f6;">📄 查看原始文本摘要</summary>
                             <pre style="white-space: pre-wrap; background:#f8fafc; padding:8px; border-radius:4px; margin-top:8px;">${escapeHtml((field.data.raw_text || '').slice(0, 500))}${(field.data.raw_text || '').length > 500 ? '...' : ''}</pre>
@@ -601,6 +652,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     elements.fullscreenResultBtn.addEventListener('click', () => toggleFullscreen(elements.resultModalContent));
+
+    // 关闭溯源模态框
+    if (elements.closeSourceModalBtn) {
+        elements.closeSourceModalBtn.addEventListener('click', () => {
+            elements.sourceModal.classList.remove('active');
+        });
+    }
+    if (elements.sourceModal) {
+        elements.sourceModal.addEventListener('click', (e) => {
+            if (e.target === elements.sourceModal) {
+                elements.sourceModal.classList.remove('active');
+            }
+        });
+    }
 
     document.addEventListener('fullscreenchange', () => {
         if (document.fullscreenElement === elements.previewModalContent) {

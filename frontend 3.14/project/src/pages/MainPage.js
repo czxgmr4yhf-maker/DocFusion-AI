@@ -4,7 +4,7 @@ import { renderPreviewModal } from '../components/PreviewModal.js';
 import { renderResultModal } from '../components/ResultModal.js';
 import { renderCommandInput } from '../components/CommandInput.js';
 import { renderFileList } from '../components/FileList.js';
-import { uploadFiles, executeCommand, getTask, getFields , parseFileByBackend} from '../api/index.js';
+import { uploadFiles, executeCommand, getTask, getFields} from '../api/index.js';
 import { escapeHtml, toggleFullscreen } from '../utils/helpers.js';
 
 // 全局状态
@@ -16,7 +16,7 @@ let currentName = '旅行者';
 let elements = {};
 
 // 允许的扩展名
-const allowedExtensions = ['.txt', '.md', '.doc', '.docx', '.xls', '.xlsx'];
+const allowedExtensions = ['.txt', '.md', '.docx', '.xlsx'];
 
 // ---------- 辅助函数 ----------
 function setStatus(text, type = 'info') {
@@ -33,38 +33,6 @@ function setStatus(text, type = 'info') {
     }, 3000);
 }
 
-function readFileAsText(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = e => resolve(e.target.result);
-        reader.onerror = e => reject(e.target.error);
-        reader.readAsText(file, 'UTF-8');
-    });
-}
-
-function readFileAsArrayBuffer(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = e => resolve(e.target.result);
-        reader.onerror = e => reject(e.target.error);
-        reader.readAsArrayBuffer(file);
-    });
-}
-
-function extractFieldsFromText(text) {
-    const lines = text.split(/\r?\n/);
-    const fields = new Set();
-    lines.forEach(line => {
-        line = line.trim();
-        if (line) {
-            const firstWord = line.split(/\s+/)[0];
-            if (firstWord && firstWord.length > 0 && firstWord.length < 30) {
-                fields.add(firstWord);
-            }
-        }
-    });
-    return Array.from(fields);
-}
 
 function isValidFileType(file) {
     const fileName = file.name || '';
@@ -229,148 +197,6 @@ function openPreview(file) {
     }
 }
 
-async function handleAllFilesBackendParse() {
-    if (fileArray.length === 0) {
-        setStatus('⚠️ 没有可上传的文件', 'error');
-        return;
-    }
-
-    // 显示加载中
-    document.getElementById('resultTitle').textContent = `批量解析 (共 ${fileArray.length} 个文件)`;
-    document.getElementById('resultContent').innerHTML = '<div class="preview-placeholder">解析中...</div>';
-    document.getElementById('resultModal').classList.add('active');
-    centerResultWindow();
-
-    const results = [];
-    for (let i = 0; i < fileArray.length; i++) {
-        const file = fileArray[i].file;
-        setStatus(`正在解析: ${file.name} (${i+1}/${fileArray.length})`, 'info');
-        
-        // 更新结果窗口显示进度
-        document.getElementById('resultContent').innerHTML = `
-            <div class="preview-placeholder">
-                正在解析: ${escapeHtml(file.name)} (${i+1}/${fileArray.length})<br>
-                请稍候...
-            </div>
-        `;
-
-        try {
-            const { parseFileByBackend } = await import('../api/index.js');
-            const result = await parseFileByBackend(file);
-            if (result.success) {
-                results.push({
-                    fileName: file.name,
-                    success: true,
-                    result: result.result
-                });
-            } else {
-                results.push({
-                    fileName: file.name,
-                    success: false,
-                    error: result.message
-                });
-            }
-        } catch (err) {
-            results.push({
-                fileName: file.name,
-                success: false,
-                error: err.message
-            });
-        }
-    }
-
-    // 汇总展示所有结果
-    let resultHtml = `<div style="background: #f0f9ff; padding: 12px; border-radius: 8px; margin-bottom: 16px;">
-                        <div style="font-weight: 600;">📊 批量解析完成</div>
-                        <div>共 ${fileArray.length} 个文件，成功 ${results.filter(r => r.success).length} 个，失败 ${results.filter(r => !r.success).length} 个</div>
-                       </div>`;
-    
-    results.forEach((res, idx) => {
-        resultHtml += `
-            <div style="margin-bottom: 16px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
-                <div style="background: ${res.success ? '#f1f5f9' : '#fee2e2'}; padding: 8px 12px; font-weight: 600;">
-                    📄 ${escapeHtml(res.fileName)} ${res.success ? '✅' : '❌'}
-                </div>
-                <div style="padding: 12px;">
-                    ${res.success ? `<pre style="white-space: pre-wrap; font-family: monospace; margin: 0;">${escapeHtml(res.result)}</pre>` : `<div style="color: #b91c1c;">❌ 解析失败: ${escapeHtml(res.error)}</div>`}
-                </div>
-            </div>
-        `;
-    });
-
-    document.getElementById('resultContent').innerHTML = resultHtml;
-    setStatus(`✅ 批量解析完成，成功 ${results.filter(r => r.success).length} 个文件`, 'success');
-}
-
-async function extractFields(file) {
-    const fileName = file.name;
-    const ext = fileName.slice(fileName.lastIndexOf('.')).toLowerCase();
-    
-    // 显示加载中
-    document.getElementById('resultTitle').textContent = `字段抽取: ${fileName}`;
-    document.getElementById('resultContent').innerHTML = '<div class="preview-placeholder">抽取中...</div>';
-    document.getElementById('resultModal').classList.add('active');
-    centerResultWindow();
-
-    let fields = [];
-
-    try {
-        if (ext === '.txt' || ext === '.md') {
-            const text = await readFileAsText(file);
-            fields = extractFieldsFromText(text);
-        } else if (ext === '.docx') {
-            const arrayBuffer = await readFileAsArrayBuffer(file);
-            const result = await mammoth.extractRawText({ arrayBuffer });
-            fields = extractFieldsFromText(result.value);
-        } else if (ext === '.xlsx') {
-            const arrayBuffer = await readFileAsArrayBuffer(file);
-            const workbook = XLSX.read(new Uint8Array(arrayBuffer), { type: 'array' });
-            const firstSheetName = workbook.SheetNames[0];
-            const worksheet = workbook.Sheets[firstSheetName];
-            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-            if (jsonData.length > 0) {
-                fields = jsonData[0].filter(cell => cell != null && cell.toString().trim() !== '');
-            } else {
-                fields = [];
-            }
-        } else {
-            fields = ['不支持的文件类型'];
-        }
-
-        // 去重并限制数量
-        fields = [...new Set(fields)].slice(0, 50);
-
-        // 构建结果显示
-        const fieldsHtml = fields.map(f => `<div style="padding: 4px 8px; background: #f1f5f9; border-radius: 20px; margin: 4px;">${escapeHtml(f)}</div>`).join('');
-        const sendButtonId = 'sendFieldsBtn_' + Date.now();
-        document.getElementById('resultContent').innerHTML = `
-            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px;">${fieldsHtml}</div>
-            <div style="display: flex; gap: 10px; align-items: center; border-top: 1px solid #e2e8f0; padding-top: 16px;">
-                <input type="text" id="extraParamInput" class="command-input" placeholder="额外参数(可选)" style="flex:1;">
-                <button class="btn btn-primary" id="${sendButtonId}">发送字段结果</button>
-            </div>
-        `;
-
-        // 绑定发送按钮事件
-        document.getElementById(sendButtonId).addEventListener('click', async () => {
-            const extraParam = document.getElementById('extraParamInput').value.trim();
-            const { sendExtractedFields } = await import('../api/index.js');
-            const result = await sendExtractedFields({
-                fileName: file.name,
-                fields: fields,
-                extra: extraParam
-            });
-            if (result.success) {
-                setStatus(`✅ 字段结果发送成功，共 ${fields.length} 个字段`, 'success');
-            } else {
-                setStatus('❌ 发送失败: ' + (result.message || ''), 'error');
-            }
-        });
-
-    } catch (err) {
-        document.getElementById('resultContent').innerHTML = `<div class="preview-placeholder">❌ 抽取失败: ${escapeHtml(err.message)}</div>`;
-    }
-}
 
 // 指令执行
 async function handleExecuteCommand() {
@@ -467,7 +293,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ${renderProfileCorner({ avatar: currentAvatar, name: currentName })}
         <div class="upload-card">
             <h2>📁 文件上传 & 指令执行</h2>
-            <div class="subhead">支持 .txt · .md · .doc/.docx · .xls/.xlsx (旧版Word/Excel可上传，预览限新版)</div>
+            <div class="subhead">支持 .txt · .md · .docx · .xlsx</div>
             <input type="file" id="fileInput" multiple
                 accept=".txt,.md,.doc,.docx,.xls,.xlsx,text/plain,text/markdown,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 style="display: none;">
@@ -475,7 +301,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <button class="btn" id="selectBtn">📂 选择文件</button>
                 <button class="btn btn-secondary" id="clearAllBtn">🗑️ 清空列表</button>
             </div>
-            <div id="dropZone" class="drop-zone">⬇️ 或将文件拖放到这里 (支持旧版.doc/.xls)</div>
+            <div id="dropZone" class="drop-zone">⬇️ 或将文件拖放到这里</div>
             <div id="fileListContainer" class="file-list"></div>
             <div class="upload-area">
                 <button class="btn btn-primary" id="uploadBtn">🚀 上传文件</button>
@@ -560,17 +386,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return;
         }
-        //后端解析
-        const backendParseBtn = e.target.closest('.backend-parse-btn');
-        if (backendParseBtn) {
-            e.preventDefault();
-            const index = backendParseBtn.getAttribute('data-index');
-            if (index !== null) {
-                const fileItem = fileArray[parseInt(index, 10)];
-                if (fileItem) handleBackendParse(fileItem.file);
-            }
-            return;
-        }
+       
         const previewBtn = e.target.closest('.preview-text-btn');
         if (previewBtn) {
             e.preventDefault();
@@ -584,75 +400,133 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 上传按钮：上传 -> 查询任务 -> 查询字段
     elements.uploadBtn.addEventListener('click', async () => {
-        if (fileArray.length === 0) {
-            setStatus('⚠️ 没有可上传的文件', 'error');
-            return;
+    if (fileArray.length === 0) {
+        setStatus('⚠️ 没有可上传的文件', 'error');
+        return;
+    }
+
+    const files = fileArray.map(item => item.file);
+    setStatus('⏳ 上传中...', 'info');
+
+    // 1. 上传所有文件，获取 task_id 列表
+    const uploadResult = await uploadFiles(files);
+    if (!uploadResult.success) {
+        setStatus(`❌ 上传失败: ${uploadResult.message}`, 'error');
+        return;
+    }
+
+    const tasks = uploadResult.results; // 每个元素包含 fileName 和 task_id
+    if (!tasks || tasks.length === 0) {
+        setStatus('❌ 上传成功，但没有返回任务信息', 'error');
+        return;
+    }
+
+    setStatus(`✅ 上传成功，共 ${tasks.length} 个任务`, 'success');
+
+    // 2. 准备结果窗口
+    const resultTitle = document.getElementById('resultTitle');
+    const resultContent = document.getElementById('resultContent');
+    resultTitle.textContent = '文件解析与字段提取结果';
+    resultContent.innerHTML = '<div class="preview-placeholder">正在获取字段结果，请稍候...</div>';
+    document.getElementById('resultModal').classList.add('active');
+    centerResultWindow();
+
+    // 3. 依次处理每个任务（轮询状态 → 获取字段）
+    const allFields = [];
+    for (let i = 0; i < tasks.length; i++) {
+        const task = tasks[i];
+        const taskId = task.task_id;
+        const fileName = task.fileName;
+
+        // 更新进度提示
+        resultContent.innerHTML = `<div class="preview-placeholder">正在处理 (${i+1}/${tasks.length})：${escapeHtml(fileName)}<br>请稍候...</div>`;
+
+        // 轮询任务状态，直到完成或超时
+        let taskCompleted = false;
+        let retries = 0;
+        const maxRetries = 30;  // 最多等待 30 秒
+        const interval = 1000;  // 每秒查询一次
+
+        while (!taskCompleted && retries < maxRetries) {
+            const taskRes = await getTask(taskId);
+            if (!taskRes.success) {
+                break;
+            }
+            const status = taskRes.data?.status;
+            if (status === 'extracted') {
+                taskCompleted = true;
+                break;
+            }
+            retries++;
+            await new Promise(resolve => setTimeout(resolve, interval));
         }
 
-        const files = fileArray.map(item => item.file);
-        setStatus('⏳ 上传中...', 'info');
-
-        const uploadResult = await uploadFiles(files);
-
-        if (!uploadResult.success) {
-            setStatus(`❌ 上传失败: ${uploadResult.message}`, 'error');
-            return;
+        if (!taskCompleted) {
+            allFields.push({
+                fileName,
+                success: false,
+                error: '任务未完成或超时'
+            });
+            continue;
         }
 
-        const firstTaskId = uploadResult.results?.[0]?.task_id;
-        if (!firstTaskId) {
-            setStatus('❌ 上传成功，但没有拿到 task_id', 'error');
-            return;
-        }
-
-        setStatus(`✅ 上传成功，正在查询任务 ${firstTaskId}...`, 'success');
-
-        const taskResult = await getTask(firstTaskId);
-
-        if (!taskResult.success) {
-            setStatus(`❌ 查询任务失败: ${taskResult.message}`, 'error');
-            return;
-        }
-
-        const status = taskResult.data.status || '未知状态';
-        setStatus(`✅ 任务 ${firstTaskId} 状态：${status}，正在查询字段结果...`, 'success');
-
-        const fieldsResult = await getFields(firstTaskId);
-
-        if (fieldsResult.success) {
-            const data = fieldsResult.data;
-            const resultTitle = document.getElementById('resultTitle');
-            const resultContent = document.getElementById('resultContent');
-
-            resultTitle.textContent = `字段提取结果（任务 ${firstTaskId}）`;
-            resultContent.innerHTML = `
-                <div style="background:#fff; padding:1rem; border-radius:8px; line-height:1.8;">
-                    <p><strong>任务ID：</strong>${data.task_id ?? ''}</p>
-                    <p><strong>文档ID：</strong>${data.doc_id ?? ''}</p>
-                    <p><strong>文档类型：</strong>${data.doc_type ?? ''}</p>
-                    <p><strong>项目名称：</strong>${data.project_name ?? ''}</p>
-                    <p><strong>项目负责人：</strong>${data.project_leader ?? ''}</p>
-                    <p><strong>机构名称：</strong>${data.organization_name ?? ''}</p>
-                    <p><strong>联系电话：</strong>${data.phone ?? ''}</p>
-                </div>
-            `;
-
-            document.getElementById('resultModal').classList.add('active');
-            centerResultWindow();
-            setStatus(`✅ 字段结果获取成功（任务 ${firstTaskId}）`, 'success');
-            console.log('字段结果：', data);
+        // 获取字段结果
+        const fieldsRes = await getFields(taskId);
+        if (fieldsRes.success) {
+            allFields.push({
+                fileName,
+                success: true,
+                data: fieldsRes.data
+            });
         } else {
-            setStatus(`⚠️ 任务已上传，但暂未查到字段结果: ${fieldsResult.message}`, 'error');
+            allFields.push({
+                fileName,
+                success: false,
+                error: fieldsRes.message
+            });
         }
+    }
+
+    // 4. 汇总展示所有结果
+    let resultHtml = `
+        <div style="background: #f0f9ff; padding: 12px; border-radius: 8px; margin-bottom: 16px;">
+            <div style="font-weight: 600;">📊 处理完成</div>
+            <div>共 ${tasks.length} 个文件，成功 ${allFields.filter(f => f.success).length} 个，失败 ${allFields.filter(f => !f.success).length} 个</div>
+        </div>
+    `;
+
+    allFields.forEach(field => {
+        resultHtml += `
+            <div style="margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+                <div style="background: ${field.success ? '#f1f5f9' : '#fee2e2'}; padding: 8px 12px; font-weight: 600;">
+                    📄 ${escapeHtml(field.fileName)} ${field.success ? '✅' : '❌'}
+                </div>
+                <div style="padding: 12px;">
+                    ${field.success ? `
+                        <p><strong>任务ID：</strong>${data.task_id ?? ''}</p>
+                        <p><strong>文档ID：</strong>${data.doc_id ?? ''}</p>
+                        <p><strong>文档类型：</strong>${data.doc_type ?? ''}</p>
+                        <p><strong>项目名称：</strong>${data.project_name ?? ''}</p>
+                        <p><strong>项目负责人：</strong>${data.project_leader ?? ''}</p>
+                        <p><strong>机构名称：</strong>${data.organization_name ?? ''}</p>
+                        <p><strong>联系电话：</strong>${data.phone ?? ''}</p>
+                        <details>
+                            <summary style="cursor:pointer; color:#3b82f6;">📄 查看原始文本摘要</summary>
+                            <pre style="white-space: pre-wrap; background:#f8fafc; padding:8px; border-radius:4px; margin-top:8px;">${escapeHtml((field.data.raw_text || '').slice(0, 500))}${(field.data.raw_text || '').length > 500 ? '...' : ''}</pre>
+                        </details>
+                    ` : `
+                        <div style="color: #b91c1c;">❌ 获取字段失败: ${escapeHtml(field.error)}</div>
+                    `}
+                </div>
+            </div>
+        `;
     });
 
+    resultContent.innerHTML = resultHtml;
+    setStatus(`✅ 处理完成，成功 ${allFields.filter(f => f.success).length} 个文件`, 'success');
+});
+
     elements.executeBtn.addEventListener('click', handleExecuteCommand);
-    const globalParseBtn = document.getElementById('globalParseBtn');
-    if (globalParseBtn) {
-        globalParseBtn.addEventListener('click', () => {
-            handleAllFilesBackendParse();
-        });
-    }
     elements.commandInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') handleExecuteCommand();
     });

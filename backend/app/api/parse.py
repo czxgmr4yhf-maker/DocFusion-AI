@@ -32,7 +32,9 @@ def run_parse(task_id: int, db: Session):
         if not file_path.exists():
             raise FileNotFoundError(f"文件不存在: {task.file_path}")
 
-        parse_result = parser.parse(file_path, doc_id=f"doc_{task.id}")
+        ext = file_path.suffix.lower().lstrip(".")
+        doc_id = f"{file_path.stem}_{ext}"
+        parse_result = parser.parse(file_path, doc_id=doc_id)
 
         task.status = "parsed"
         task.result = json.dumps(parse_result, ensure_ascii=False)

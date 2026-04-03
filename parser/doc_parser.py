@@ -3,6 +3,8 @@ import json
 import uuid
 import re
 import argparse
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -19,11 +21,20 @@ except ImportError:
     openpyxl = None
     print("警告：openpyxl 未安装，无法处理 Excel 文件。请执行 pip install openpyxl")
 
+# 尝试导入 calamine（用于处理 strict open XML 格式 Excel）
+try:
+    from python_calamine import CalamineWorkbook
+    CALAMINE_AVAILABLE = True
+except ImportError:
+    CALAMINE_AVAILABLE = False
+    print("警告：python-calamine 未安装，遇到 strict open XML 格式 Excel 时可能无法解析。请执行 pip install python-calamine")
+
 
 class DocumentParser:
     """
     文档解析器：支持 .docx, .xlsx, .md, .txt 格式，输出统一 JSON 格式。
     包含文本清洗功能：去除多余空格、控制字符，合并内部空白。
+    Word 解析：优先使用 python-docx，失败时自动回退到手动解析 word/document.xml。
     """
 
     def __init__(self):
@@ -31,21 +42,13 @@ class DocumentParser:
 
     @staticmethod
     def _clean_text(text: str) -> str:
-        """
-        清洗文本：
-        1. 移除控制字符（保留常规空格和可见字符）
-        2. 将内部连续空白（空格、制表符、换行等）合并为单个空格
-        3. 去除首尾空白
-        """
+        """清洗文本：移除控制字符、合并空白、去除首尾空白"""
         if not isinstance(text, str):
             text = str(text)
-
-        # 移除控制字符：C0控制符（除\t,\n外）和DEL
+        # 移除控制字符（保留 \t, \n 等）
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-
         # 合并内部连续空白为单个空格
         text = re.sub(r'\s+', ' ', text)
-
         # 去除首尾空白
         return text.strip()
 
@@ -67,10 +70,7 @@ class DocumentParser:
         return cleaned_tables
 
     def parse(self, file_path: Path, doc_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        解析单个文档并返回统一的 JSON 结构。
-        清洗过程在提取后自动应用。
-        """
+        """解析单个文档并返回统一的 JSON 结构"""
         if not file_path.exists():
             raise FileNotFoundError(f"文件不存在：{file_path}")
 
@@ -107,11 +107,32 @@ class DocumentParser:
             "raw_text": raw_text
         }
 
-    # ---------- Word 解析（修复表格读取）----------
+    # ---------- Word 解析（增强版，支持手动回退）----------
     def _parse_docx(self, file_path: Path) -> tuple[List[str], List[List[List[str]]]]:
+        """
+        解析 Word 文档。
+        优先使用 python-docx，如果因缺少部件失败，则回退到手动解析 word/document.xml。
+        """
         if Document is None:
             raise ImportError("python-docx 未安装，无法解析 Word 文档")
 
+        # 首先检查是否为有效的 ZIP 文件（.docx 本质是 ZIP）
+        if not zipfile.is_zipfile(file_path):
+            raise ValueError(f"文件 {file_path} 不是有效的 ZIP 归档，可能为旧版 .doc 文件，无法解析。")
+
+        try:
+            # 尝试用 python-docx 解析
+            return self._parse_docx_with_python_docx(file_path)
+        except KeyError as e:
+            # 缺少部件（如 footnotes.xml），回退到手动解析
+            print(f"  解析 {file_path.name} 时缺少部件 ({e})，尝试手动解析...")
+            return self._parse_docx_manual(file_path)
+        except Exception as e:
+            # 其他未知错误
+            raise RuntimeError(f"解析 Word 文档失败：{e}")
+
+    def _parse_docx_with_python_docx(self, file_path: Path) -> tuple[List[str], List[List[List[str]]]]:
+        """使用 python-docx 解析（标准 .docx）"""
         doc = Document(str(file_path))
         paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
         tables = []
@@ -122,44 +143,144 @@ class DocumentParser:
                 for row in table.rows:
                     row_data = []
                     for cell in row.cells:
-                        # 优先使用 cell.text 获取纯文本，如果为空则尝试拼接段落
                         cell_text = cell.text.strip()
                         if not cell_text:
                             # 通过段落拼接（保留换行）
                             cell_text = '\n'.join([p.text for p in cell.paragraphs if p.text.strip()])
                         row_data.append(cell_text)
-                    # 只保留非空行（至少一个单元格有内容）
                     if any(cell.strip() for cell in row_data):
                         table_data.append(row_data)
                 if table_data:
                     tables.append(table_data)
             except Exception as e:
-                # 如果某个表格解析失败，记录警告并跳过该表格，避免整个文档解析失败
                 print(f"  警告：Word 表格解析失败，已跳过。错误：{e}")
                 continue
 
         return paragraphs, tables
 
-    # ---------- Excel 解析 ----------
-    def _parse_xlsx(self, file_path: Path) -> tuple[List[str], List[List[List[str]]]]:
-        if openpyxl is None:
-            raise ImportError("openpyxl 未安装，无法解析 Excel 文件")
-
-        wb = openpyxl.load_workbook(file_path, data_only=True)
+    def _parse_docx_manual(self, file_path: Path) -> tuple[List[str], List[List[List[str]]]]:
+        """
+        手动解析 docx 文件：解压并读取 word/document.xml，提取段落和表格。
+        用于处理 python-docx 无法读取的兼容模式文档。
+        """
         paragraphs = []
         tables = []
-        for sheet in wb.worksheets:
-            for row in sheet.iter_rows(values_only=True):
-                for cell in row:
-                    if cell is not None and str(cell).strip():
-                        paragraphs.append(str(cell))
-            table_data = []
-            for row in sheet.iter_rows(values_only=True):
-                row_data = [str(cell) if cell is not None else '' for cell in row]
-                if any(cell.strip() for cell in row_data):
-                    table_data.append(row_data)
-            if table_data:
-                tables.append(table_data)
+
+        # WordprocessingML 命名空间
+        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zipf:
+                # 读取主文档部分
+                with zipf.open('word/document.xml') as f:
+                    tree = ET.parse(f)
+                    root = tree.getroot()
+
+                # 提取所有段落（w:p）
+                for p in root.findall('.//w:p', namespaces=ns):
+                    # 获取段落中所有文本（w:t）
+                    texts = p.findall('.//w:t', namespaces=ns)
+                    p_text = ''.join(t.text for t in texts if t.text)
+                    if p_text.strip():
+                        paragraphs.append(p_text)
+
+                # 提取所有表格（w:tbl）
+                for tbl in root.findall('.//w:tbl', namespaces=ns):
+                    table_data = []
+                    for row in tbl.findall('.//w:tr', namespaces=ns):
+                        row_data = []
+                        for cell in row.findall('.//w:tc', namespaces=ns):
+                            # 单元格内可能包含多个段落，提取所有文本并用换行连接
+                            cell_texts = []
+                            for p in cell.findall('.//w:p', namespaces=ns):
+                                p_texts = p.findall('.//w:t', namespaces=ns)
+                                p_text = ''.join(t.text for t in p_texts if t.text)
+                                if p_text:
+                                    cell_texts.append(p_text)
+                            cell_text = '\n'.join(cell_texts) if cell_texts else ''
+                            row_data.append(cell_text)
+                        # 只保留至少有一个非空单元格的行
+                        if any(cell.strip() for cell in row_data):
+                            table_data.append(row_data)
+                    if table_data:
+                        tables.append(table_data)
+
+        except KeyError:
+            # 如果连 word/document.xml 都不存在，说明文件严重损坏
+            raise RuntimeError(f"文件 {file_path} 中未找到 word/document.xml，可能已损坏。")
+        except Exception as e:
+            raise RuntimeError(f"手动解析 docx 失败：{e}")
+
+        return paragraphs, tables
+
+    # ---------- Excel 解析（增强版，支持 strict open XML）----------
+    def _parse_xlsx(self, file_path: Path) -> tuple[List[str], List[List[List[str]]]]:
+        """
+        解析 Excel 文件。
+        首先尝试用 openpyxl 读取普通格式，如果发现工作表数为 0，
+        且 calamine 可用，则自动切换至 calamine 引擎读取 strict open XML 格式。
+        """
+        paragraphs = []
+        tables = []
+
+        # 尝试用 openpyxl 读取
+        if openpyxl is not None:
+            try:
+                wb = openpyxl.load_workbook(file_path, data_only=True)
+                if len(wb.worksheets) > 0:  # 普通格式，有工作表
+                    for sheet in wb.worksheets:
+                        # 收集单元格文本到 paragraphs
+                        for row in sheet.iter_rows(values_only=True):
+                            for cell in row:
+                                if cell is not None and str(cell).strip():
+                                    paragraphs.append(str(cell))
+                        # 构建表格数据
+                        table_data = []
+                        for row in sheet.iter_rows(values_only=True):
+                            row_data = [str(cell) if cell is not None else '' for cell in row]
+                            if any(cell.strip() for cell in row_data):
+                                table_data.append(row_data)
+                        if table_data:
+                            tables.append(table_data)
+                    return paragraphs, tables
+                else:
+                    print(f"  检测到文件可能为 strict open XML 格式，尝试使用 calamine 引擎...")
+            except Exception as e:
+                print(f"  openpyxl 读取失败：{e}，尝试使用 calamine 引擎...")
+        else:
+            print("  openpyxl 未安装，尝试使用 calamine 引擎...")
+
+        # 如果 openpyxl 失败或无工作表，且 calamine 可用，则用 calamine 读取
+        if not CALAMINE_AVAILABLE:
+            raise ImportError("既无法使用 openpyxl，也未安装 python-calamine，无法解析该 Excel 文件。")
+
+        try:
+            workbook = CalamineWorkbook.from_path(str(file_path))
+            sheet_names = workbook.sheet_names
+            if not sheet_names:
+                raise ValueError("Excel 文件中未找到任何工作表")
+
+            for sheet_name in sheet_names:
+                sheet = workbook.get_sheet_by_name(sheet_name)
+                # to_python() 返回二维列表，元素为 Python 类型（str, float, int, datetime, None 等）
+                data = sheet.to_python()
+
+                # 将每个单元格转为字符串并清洗，同时收集段落和表格
+                table_data = []
+                for row in data:
+                    row_str = [str(cell) if cell is not None else '' for cell in row]
+                    # 收集段落（非空单元格）
+                    for cell_str in row_str:
+                        if cell_str.strip():
+                            paragraphs.append(cell_str)
+                    # 表格保留整行（可能包含空单元格）
+                    if any(cell.strip() for cell in row_str):
+                        table_data.append(row_str)
+                if table_data:
+                    tables.append(table_data)
+        except Exception as e:
+            raise RuntimeError(f"calamine 解析失败：{e}")
+
         return paragraphs, tables
 
     # ---------- Markdown 解析 ----------

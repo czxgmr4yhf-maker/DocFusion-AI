@@ -6,6 +6,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 MODULE_PATH = BASE_DIR / "extract_ai_1.0.py"
 DATA_PATH = BASE_DIR / "data.json"
+WORD_PATH = BASE_DIR / "word.json"
 OUTPUT_PATH = BASE_DIR / "test_output.json"
 
 
@@ -20,7 +21,8 @@ def load_module():
 def main():
     module = load_module()
     data = json.loads(DATA_PATH.read_text(encoding="utf-8"))
-    result = module.extract(data)
+    word_config = json.loads(WORD_PATH.read_text(encoding="utf-8"))
+    result = module.extract(data, word_config=word_config)
     OUTPUT_PATH.write_text(
         json.dumps(result, ensure_ascii=False, indent=2),
         encoding="utf-8",

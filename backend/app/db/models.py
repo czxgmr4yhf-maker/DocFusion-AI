@@ -30,10 +30,9 @@ class DocumentField(Base):
     paragraphs = Column(Text, nullable=True)   # 先用字符串保存，后面可转 JSON
     tables = Column(Text, nullable=True)       # 先用字符串保存，后面可转 JSON
 
-    project_name = Column(String, nullable=True)
-    project_leader = Column(String, nullable=True)
-    organization_name = Column(String, nullable=True)
-    phone = Column(String, nullable=True)
+    category = Column(String, nullable=True)
+    indicator = Column(String, nullable=True)
+    value = Column(String, nullable=True)
 
     # ===== 字段来源追溯信息 =====
     project_name_source_file = Column(String, nullable=True)

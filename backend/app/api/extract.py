@@ -33,26 +33,21 @@ def run_extract(task_id: int, db: Session):
         raise HTTPException(status_code=400, detail="解析结果为空，无法抽取字段")
 
     # 3 正则抽取字段
-    project_name = None
-    project_leader = None
-    organization_name = None
-    phone = None
+    category = None
+    indicator = None
+    value = None
 
-    m = re.search(r"项目名称[:：]\s*(.+)", text)
+    m = re.search(r"(?:分类|类别)[:：]\s*(.+)", text)
     if m:
-        project_name = m.group(1).strip()
+        category = m.group(1).strip()
 
-    m = re.search(r"负责人[:：]\s*(.+)", text)
+    m = re.search(r"指标[:：]\s*(.+)", text)
     if m:
-        project_leader = m.group(1).strip()
+        indicator = m.group(1).strip()
 
-    m = re.search(r"单位名称[:：]\s*(.+)", text)
+    m = re.search(r"(?:数值|值)[:：]\s*(.+)", text)
     if m:
-        organization_name = m.group(1).strip()
-
-    m = re.search(r"1\d{10}", text)
-    if m:
-        phone = m.group(0)
+        value = m.group(1).strip()
 
     # 4 避免重复插入同一个 task_id 的结果
     old_field = db.query(DocumentField).filter(DocumentField.task_id == task_id).first()
@@ -68,10 +63,9 @@ def run_extract(task_id: int, db: Session):
         raw_text=text,
         paragraphs=json.dumps(paragraphs, ensure_ascii=False),
         tables=json.dumps(tables, ensure_ascii=False),
-        project_name=project_name,
-        project_leader=project_leader,
-        organization_name=organization_name,
-        phone=phone
+        category=category,
+        indicator=indicator,
+        value=value
     )
 
     db.add(field_data)
@@ -81,10 +75,9 @@ def run_extract(task_id: int, db: Session):
     return {
         "message": "字段抽取完成",
         "task_id": task_id,
-        "project_name": project_name,
-        "project_leader": project_leader,
-        "organization_name": organization_name,
-        "phone": phone
+        "category": category,
+        "indicator": indicator,
+        "value": value
     }
 
 

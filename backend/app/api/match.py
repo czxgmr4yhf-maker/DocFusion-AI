@@ -29,14 +29,12 @@ def match_task(task_id: int, db: Session = Depends(get_db)):
     # 2 组装传给 matcher 的数据
     raw_data = {}
 
-    if field_data.project_name:
-        raw_data["项目名称"] = field_data.project_name
-    if field_data.project_leader:
-        raw_data["负责人"] = field_data.project_leader
-    if field_data.organization_name:
-        raw_data["单位名称"] = field_data.organization_name
-    if field_data.phone:
-        raw_data["联系电话"] = field_data.phone
+    if field_data.category:
+        raw_data["分类"] = field_data.category
+    if field_data.indicator:
+        raw_data["指标"] = field_data.indicator
+    if field_data.value:
+        raw_data["数值"] = field_data.value
 
     if not raw_data:
         raise HTTPException(status_code=400, detail="当前没有可匹配的字段，请先检查抽取结果")

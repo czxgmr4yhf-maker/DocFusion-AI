@@ -1,84 +1,98 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-import re
+from pathlib import Path
+import importlib.util
 import json
+import sys
 
 from app.db.database import get_db
-from app.db.models import DocumentField, Task
+from app.db.models import Task
 
 router = APIRouter()
 
+ROOT_DIR = Path(__file__).resolve().parents[3]
+EXTRACT_DIR = ROOT_DIR / "extract"
+EXTRACT_FILE = EXTRACT_DIR / "extract_ai_1.0.py"
+WORD_JSON = EXTRACT_DIR / "word.json"
+
+_extract_module = None
+_word_config_cache = None
+
+
+def load_extract_module():
+    global _extract_module
+
+    if _extract_module is not None:
+        return _extract_module
+
+    if not EXTRACT_FILE.exists():
+        raise FileNotFoundError(f"未找到抽取模块文件: {EXTRACT_FILE}")
+
+    spec = importlib.util.spec_from_file_location("extract_ai_module", EXTRACT_FILE)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载抽取模块: {EXTRACT_FILE}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["extract_ai_module"] = module
+    spec.loader.exec_module(module)
+
+    if not hasattr(module, "extract"):
+        raise AttributeError("extract_ai_1.0.py 中未找到 extract 函数")
+
+    _extract_module = module
+    return _extract_module
+
+
+def load_word_config():
+    global _word_config_cache
+
+    if _word_config_cache is not None:
+        return _word_config_cache
+
+    if not WORD_JSON.exists():
+        raise FileNotFoundError(f"未找到词表配置文件: {WORD_JSON}")
+
+    _word_config_cache = json.loads(WORD_JSON.read_text(encoding="utf-8"))
+    return _word_config_cache
+
 
 def run_extract(task_id: int, db: Session):
-    # 1 查询任务
     task = db.query(Task).filter(Task.id == task_id).first()
-
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    # 2 读取解析结果
     if not task.result:
         raise HTTPException(status_code=400, detail="请先完成解析，再进行字段抽取")
 
     try:
         parse_data = json.loads(task.result)
-    except Exception:
-        raise HTTPException(status_code=500, detail="解析结果读取失败")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"解析结果读取失败: {str(e)}")
 
-    text = parse_data.get("raw_text", "")
-    paragraphs = parse_data.get("paragraphs", [])
-    tables = parse_data.get("tables", [])
+    try:
+        module = load_extract_module()
+        word_config = load_word_config()
 
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="解析结果为空，无法抽取字段")
+        extract_result = module.extract(parse_data, word_config=word_config)
 
-    # 3 正则抽取字段
-    category = None
-    indicator = None
-    value = None
-
-    m = re.search(r"(?:分类|类别)[:：]\s*(.+)", text)
-    if m:
-        category = m.group(1).strip()
-
-    m = re.search(r"指标[:：]\s*(.+)", text)
-    if m:
-        indicator = m.group(1).strip()
-
-    m = re.search(r"(?:数值|值)[:：]\s*(.+)", text)
-    if m:
-        value = m.group(1).strip()
-
-    # 4 避免重复插入同一个 task_id 的结果
-    old_field = db.query(DocumentField).filter(DocumentField.task_id == task_id).first()
-    if old_field:
-        db.delete(old_field)
+        task.extract_result = json.dumps(extract_result, ensure_ascii=False)
+        task.status = "extracted"
+        task.error_message = None
         db.commit()
+        db.refresh(task)
 
-    # 5 写入数据库
-    field_data = DocumentField(
-        task_id=task_id,
-        doc_id=parse_data.get("doc_id", f"doc_{task_id}"),
-        doc_type=task.file_type,
-        raw_text=text,
-        paragraphs=json.dumps(paragraphs, ensure_ascii=False),
-        tables=json.dumps(tables, ensure_ascii=False),
-        category=category,
-        indicator=indicator,
-        value=value
-    )
+        return {
+            "message": "字段抽取完成",
+            "task_id": task.id,
+            "status": task.status,
+            "extract_result": extract_result
+        }
 
-    db.add(field_data)
-    db.commit()
-    db.refresh(field_data)
-
-    return {
-        "message": "字段抽取完成",
-        "task_id": task_id,
-        "category": category,
-        "indicator": indicator,
-        "value": value
-    }
+    except Exception as e:
+        task.status = "extract_failed"
+        task.error_message = str(e)
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"字段抽取失败: {str(e)}")
 
 
 @router.post("/extract/{task_id}")

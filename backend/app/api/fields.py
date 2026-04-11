@@ -1,101 +1,128 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+import json
 
 from app.db.database import get_db
-from app.db.models import DocumentField
+from app.db.models import Task
 
 router = APIRouter(prefix="/fields", tags=["fields"])
 
 
-@router.get("/{task_id}")
-def get_fields(task_id: int, db: Session = Depends(get_db)):
-    field_data = db.query(DocumentField).filter(DocumentField.task_id == task_id).first()
+def safe_load_json(text):
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
 
-    if not field_data:
-        raise HTTPException(status_code=404, detail="未找到该任务的字段结果")
+
+def build_parse_summary(parse_result):
+    if not isinstance(parse_result, dict):
+        return parse_result
+
+    paragraphs = parse_result.get("paragraphs")
+    tables = parse_result.get("tables")
+    raw_text = parse_result.get("raw_text")
 
     return {
-        "task_id": field_data.task_id,
-        "doc_id": field_data.doc_id,
-        "doc_type": field_data.doc_type,
-        "raw_text": field_data.raw_text,
-        "paragraphs": field_data.paragraphs,
-        "tables": field_data.tables,
+        "doc_id": parse_result.get("doc_id"),
+        "doc_type": parse_result.get("doc_type"),
+        "paragraph_count": len(paragraphs) if isinstance(paragraphs, list) else None,
+        "table_count": len(tables) if isinstance(tables, list) else None,
+        "raw_text_preview": str(raw_text)[:500] if raw_text else None
+    }
 
-        "project_name": field_data.project_name,
-        "project_leader": field_data.project_leader,
-        "organization_name": field_data.organization_name,
-        "phone": field_data.phone,
 
-        # 字段来源信息
-        "project_name_source_file": field_data.project_name_source_file,
-        "project_name_source_paragraph": field_data.project_name_source_paragraph,
-        "project_name_source_text": field_data.project_name_source_text,
+def resolve_pipeline(parse_result, extract_result, match_result):
+    if isinstance(match_result, dict):
+        match_status = match_result.get("match_status")
+        if match_status == "success":
+            return "match"
+        if match_status == "skipped":
+            return match_result.get("pipeline_used", "extract")
 
-        "project_leader_source_file": field_data.project_leader_source_file,
-        "project_leader_source_paragraph": field_data.project_leader_source_paragraph,
-        "project_leader_source_text": field_data.project_leader_source_text,
+    if extract_result:
+        return "extract"
 
-        "organization_name_source_file": field_data.organization_name_source_file,
-        "organization_name_source_paragraph": field_data.organization_name_source_paragraph,
-        "organization_name_source_text": field_data.organization_name_source_text,
+    if parse_result:
+        return "parse"
 
-        "phone_source_file": field_data.phone_source_file,
-        "phone_source_paragraph": field_data.phone_source_paragraph,
-        "phone_source_text": field_data.phone_source_text,
+    return "unknown"
 
-        "created_at": field_data.created_at,
-        "updated_at": field_data.updated_at,
+
+def resolve_match_status(match_result):
+    if isinstance(match_result, dict):
+        return match_result.get("match_status")
+    return None
+
+
+@router.get("/{task_id}")
+def get_fields(task_id: int, db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    parse_result = safe_load_json(task.result)
+    extract_result = safe_load_json(task.extract_result)
+    match_result = safe_load_json(task.match_result)
+
+    pipeline_used = resolve_pipeline(parse_result, extract_result, match_result)
+    match_status = resolve_match_status(match_result)
+
+    return {
+        "task_id": task.id,
+        "file_name": task.file_name,
+        "file_type": task.file_type,
+        "status": task.status,
+        "pipeline_used": pipeline_used,
+        "match_status": match_status,
+        "parse_result_summary": build_parse_summary(parse_result),
+        "extract_result": extract_result,
+        "match_result": match_result,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "updated_at": task.updated_at.isoformat() if task.updated_at else None,
     }
 
 
 @router.get("/{task_id}/source/{field_name}")
 def get_field_source(task_id: int, field_name: str, db: Session = Depends(get_db)):
-    field_data = db.query(DocumentField).filter(DocumentField.task_id == task_id).first()
+    task = db.query(Task).filter(Task.id == task_id).first()
 
-    if not field_data:
-        raise HTTPException(status_code=404, detail="未找到该任务的字段结果")
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
 
-    allowed_fields = {
-        "project_name": {
-            "value": field_data.project_name,
-            "source_file": field_data.project_name_source_file,
-            "source_paragraph": field_data.project_name_source_paragraph,
-            "source_text": field_data.project_name_source_text,
-        },
-        "project_leader": {
-            "value": field_data.project_leader,
-            "source_file": field_data.project_leader_source_file,
-            "source_paragraph": field_data.project_leader_source_paragraph,
-            "source_text": field_data.project_leader_source_text,
-        },
-        "organization_name": {
-            "value": field_data.organization_name,
-            "source_file": field_data.organization_name_source_file,
-            "source_paragraph": field_data.organization_name_source_paragraph,
-            "source_text": field_data.organization_name_source_text,
-        },
-        "phone": {
-            "value": field_data.phone,
-            "source_file": field_data.phone_source_file,
-            "source_paragraph": field_data.phone_source_paragraph,
-            "source_text": field_data.phone_source_text,
-        }
-    }
+    match_result = safe_load_json(task.match_result)
+    if not isinstance(match_result, dict):
+        raise HTTPException(status_code=404, detail="当前任务没有 matcher 结果")
 
-    if field_name not in allowed_fields:
+    if match_result.get("match_status") != "success":
+        raise HTTPException(status_code=404, detail="当前任务未生成可用的 matcher 字段来源")
+
+    matched = match_result.get("matched_result", {})
+    input_data = match_result.get("input_data", {})
+
+    if field_name not in matched:
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的字段名：{field_name}，当前仅支持 {list(allowed_fields.keys())}"
+            detail=f"当前 matcher 结果中不包含字段：{field_name}"
         )
 
-    result = allowed_fields[field_name]
+    value = matched.get(field_name)
+
+    source_key = None
+    for k, v in input_data.items():
+        if v == value:
+            source_key = k
+            break
 
     return {
-        "task_id": task_id,
+        "task_id": task.id,
         "field_name": field_name,
-        "value": result["value"],
-        "source_file": result["source_file"],
-        "source_paragraph": result["source_paragraph"],
-        "source_text": result["source_text"],
+        "value": value,
+        "source_file": task.file_name,
+        "source_key": source_key,
+        "source_paragraph": None,
+        "source_text": None,
     }

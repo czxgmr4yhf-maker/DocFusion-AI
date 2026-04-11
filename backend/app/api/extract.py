@@ -56,6 +56,53 @@ def load_word_config():
     return _word_config_cache
 
 
+def safe_json_loads(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except Exception:
+            return {}
+    return {}
+
+
+def normalize_extract_result(extract_result, parse_data: dict, task: Task):
+    """
+    统一抽取结果结构。
+    如果算法已经返回 dict，就尽量保留原结构；
+    如果不是 dict，就包装成标准结构。
+    """
+    if isinstance(extract_result, dict):
+        result = dict(extract_result)
+        result.setdefault("doc_id", parse_data.get("doc_id"))
+        result.setdefault("doc_type", task.file_type)
+        result.setdefault("table_id", "table_001")
+        if "results" not in result or not isinstance(result.get("results"), list):
+            result["results"] = []
+        return result
+
+    if isinstance(extract_result, list):
+        return {
+            "doc_id": parse_data.get("doc_id"),
+            "doc_type": task.file_type,
+            "table_id": "table_001",
+            "results": extract_result
+        }
+
+    return {
+        "doc_id": parse_data.get("doc_id"),
+        "doc_type": task.file_type,
+        "table_id": "table_001",
+        "results": []
+    }
+
+
 def run_extract(task_id: int, db: Session):
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
@@ -64,20 +111,28 @@ def run_extract(task_id: int, db: Session):
     if not task.result:
         raise HTTPException(status_code=400, detail="请先完成解析，再进行字段抽取")
 
-    try:
-        parse_data = json.loads(task.result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"解析结果读取失败: {str(e)}")
+    parse_data = safe_json_loads(task.result)
+    if not parse_data:
+        raise HTTPException(status_code=500, detail="解析结果读取失败: task.result 不是有效 JSON")
 
     try:
         module = load_extract_module()
         word_config = load_word_config()
 
-        extract_result = module.extract(parse_data, word_config=word_config)
+        raw_extract_result = module.extract(parse_data, word_config=word_config)
+        extract_result = normalize_extract_result(raw_extract_result, parse_data, task)
 
+        # 1. 单独保存抽取结果（兼容你原来的字段）
         task.extract_result = json.dumps(extract_result, ensure_ascii=False)
+
+        # 2. 同时把抽取结果合并回 task.result（这是关键）
+        merged_result = dict(parse_data)
+        merged_result["extract_result"] = extract_result
+
+        task.result = json.dumps(merged_result, ensure_ascii=False)
         task.status = "extracted"
         task.error_message = None
+
         db.commit()
         db.refresh(task)
 

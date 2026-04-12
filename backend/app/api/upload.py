@@ -6,6 +6,7 @@ from app.db.database import SessionLocal
 from app.db.models import Task
 from app.api.parse import run_parse
 from app.api.extract import run_extract
+from app.api.match import match_task
 
 router = APIRouter()
 
@@ -41,9 +42,12 @@ async def upload_file(file: UploadFile = File(...)):
         # 4 自动抽取
         extract_result = run_extract(task.id, db)
 
-        # 5 更新最终状态
-        task.status = "extracted"
+        # 5 自动匹配（适合 matcher 的文件会继续标准化；不适合的会自动跳过）
+        match_result = match_task(task.id, db)
+        # 6 以 matcher 返回状态为准
+        task.status = match_result["status"]
         task.error_message = None
+
         db.commit()
         db.refresh(task)
 
@@ -52,7 +56,8 @@ async def upload_file(file: UploadFile = File(...)):
             "task_id": task.id,
             "status": task.status,
             "parse_message": parse_result["message"],
-            "extract_message": extract_result["message"]
+            "extract_message": extract_result["message"],
+            "match_message": match_result["message"]
         }
 
     except HTTPException as e:

@@ -69,11 +69,10 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
     extract_result = result_data.get("extract_result")
     if not isinstance(extract_result, dict):
         extract_result = None
-
-    # 如果后面还有 match 逻辑，也留出口
-    match_result = result_data.get("match_result")
+    # matcher 结果单独保存在 task.match_result
+    match_result = safe_json_loads(task.match_result)
     if not isinstance(match_result, dict):
-        match_result = None
+     match_result = None
 
     return {
         "task_id": task.id,

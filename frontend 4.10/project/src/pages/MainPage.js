@@ -295,37 +295,40 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     document.body.addEventListener('click', async (e) => {
-        const target = e.target.closest('.source-field');
-        if (!target) return;
-        const taskId = target.getAttribute('data-task-id');
-        const fieldName = target.getAttribute('data-field-name');
-        if (!taskId || !fieldName) return;
+    const target = e.target.closest('.source-field');
+    if (!target) return;
+    const taskId = target.getAttribute('data-task-id');
+    const fieldName = target.getAttribute('data-field-name');
+    if (!taskId || !fieldName) return;
 
-        // 显示加载状态
-        const sourceModal = document.getElementById('sourceModal');
-        const sourceContent = document.getElementById('sourceContent');
-        const sourceModalTitle = document.getElementById('sourceModalTitle');
-        sourceModalTitle.textContent = `字段溯源: ${fieldName}`;
-        sourceContent.innerHTML = '<div class="preview-placeholder">加载中...</div>';
-        sourceModal.classList.add('active');
+    const sourceModal = document.getElementById('sourceModal');
+    const sourceContent = document.getElementById('sourceContent');
+    const sourceModalTitle = document.getElementById('sourceModalTitle');
+    sourceModalTitle.textContent = `字段溯源: ${fieldName}`;
+    sourceContent.innerHTML = '<div class="preview-placeholder">加载中...</div>';
+    sourceModal.classList.add('active');
 
-        // 调用溯源接口
-        const { getFieldSource } = await import('../api/index.js');
-        const result = await getFieldSource(taskId, fieldName);
-        if (result.success) {
-            const data = result.data;
-            let html = `
-                <div style="margin-bottom: 12px;"><strong>来源文件：</strong> ${escapeHtml(data.source_file || '未知')}</div>
-                <div style="margin-bottom: 12px;"><strong>所在段落：</strong></div>
-                <pre style="background:#f8fafc; padding:12px; border-radius:8px; margin-bottom:12px;">${escapeHtml(data.source_paragraph || '无')}</pre>
-                <div style="margin-bottom: 12px;"><strong>原始文本：</strong></div>
-                <pre style="background:#f8fafc; padding:12px; border-radius:8px;">${escapeHtml(data.source_text || '无')}</pre>
-            `;
-            sourceContent.innerHTML = html;
-        } else {
-            sourceContent.innerHTML = `<div class="preview-placeholder">❌ 获取溯源失败: ${escapeHtml(result.message)}</div>`;
+    const { getFieldSource } = await import('../api/index.js');
+    const result = await getFieldSource(taskId, fieldName);
+    if (result.success) {
+        const data = result.data;
+        let html = `
+            <div style="margin-bottom: 12px;"><strong>来源文件：</strong> ${escapeHtml(data.source_file || '未知')}</div>
+            <div style="margin-bottom: 12px;"><strong>原始字段名：</strong> ${escapeHtml(data.source_key || '无')}</div>
+            <div style="margin-bottom: 12px;"><strong>字段值：</strong> ${escapeHtml(data.value || '无')}</div>
+        `;
+        // 如果有段落和原文（目前后端未提供，但预留展示）
+        if (data.source_paragraph) {
+            html += `<div style="margin-bottom: 12px;"><strong>所在段落：</strong> ${escapeHtml(data.source_paragraph)}</div>`;
         }
-    });
+        if (data.source_text) {
+            html += `<div><strong>原始文本：</strong><pre style="background:#f8fafc; padding:8px; border-radius:8px;">${escapeHtml(data.source_text)}</pre></div>`;
+        }
+        sourceContent.innerHTML = html;
+    } else {
+        sourceContent.innerHTML = `<div class="preview-placeholder">❌ 获取溯源失败: ${escapeHtml(result.message)}</div>`;
+    }
+});
 
     updateProfileUI();
 
@@ -374,7 +377,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // 上传按钮：上传 -> 查询任务 -> 查询字段
     elements.uploadBtn.addEventListener('click', async () => {
     if (fileArray.length === 0) {
         setStatus('⚠️ 没有可上传的文件', 'error');
@@ -384,14 +386,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const files = fileArray.map(item => item.file);
     setStatus('⏳ 上传中...', 'info');
 
-    // 1. 上传所有文件，获取 task_id 列表
+    // 1. 上传所有文件
     const uploadResult = await uploadFiles(files);
     if (!uploadResult.success) {
         setStatus(`❌ 上传失败: ${uploadResult.message}`, 'error');
         return;
     }
 
-    const tasks = uploadResult.results; // 每个元素包含 fileName 和 task_id
+    const tasks = uploadResult.results;
     if (!tasks || tasks.length === 0) {
         setStatus('❌ 上传成功，但没有返回任务信息', 'error');
         return;
@@ -403,12 +405,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const resultTitle = document.getElementById('resultTitle');
     const resultContent = document.getElementById('resultContent');
     resultTitle.textContent = '文件解析与字段提取结果';
-    resultContent.innerHTML = '<div class="preview-placeholder">正在获取字段结果，请稍候...</div>';
+    resultContent.innerHTML = '<div class="preview-placeholder">正在获取结果，请稍候...</div>';
     document.getElementById('resultModal').classList.add('active');
     centerResultWindow();
 
-    // 3. 依次处理每个任务（轮询状态 → 获取字段）
+    // 3. 存储所有结果
     const allFields = [];
+
     for (let i = 0; i < tasks.length; i++) {
         const task = tasks[i];
         const taskId = task.task_id;
@@ -417,53 +420,39 @@ document.addEventListener('DOMContentLoaded', () => {
         // 更新进度提示
         resultContent.innerHTML = `<div class="preview-placeholder">正在处理 (${i+1}/${tasks.length})：${escapeHtml(fileName)}<br>请稍候...</div>`;
 
-        // 轮询任务状态，直到完成或超时
-        let taskCompleted = false;
+        // 轮询 /fields 接口，直到成功或超时
+        let fieldsData = null;
         let retries = 0;
-        const maxRetries = 30;  // 最多等待 30 秒
-        const interval = 1000;  // 每秒查询一次
+        const maxRetries = 60;  // 60秒
+        const interval = 1000;
 
-        while (!taskCompleted && retries < maxRetries) {
-            const taskRes = await getTask(taskId);
-            if (!taskRes.success) {
-                break;
-            }
-            const status = taskRes.data?.status;
-            if (status === 'extracted') {
-                taskCompleted = true;
+        while (retries < maxRetries) {
+            const res = await getFields(taskId);
+            console.log(`[轮询] taskId=${taskId}, 第${retries+1}次, success=${res.success}`);
+            if (res.success) {
+                fieldsData = res.data;
                 break;
             }
             retries++;
             await new Promise(resolve => setTimeout(resolve, interval));
         }
 
-        if (!taskCompleted) {
-            allFields.push({
-                fileName,
-                success: false,
-                error: '任务未完成或超时'
-            });
-            continue;
-        }
-
-        // 获取字段结果
-        const fieldsRes = await getFields(taskId);
-        if (fieldsRes.success) {
+        if (fieldsData) {
             allFields.push({
                 fileName,
                 success: true,
-                data: fieldsRes.data
+                data: fieldsData
             });
         } else {
             allFields.push({
                 fileName,
                 success: false,
-                error: fieldsRes.message
+                error: '获取字段结果超时'
             });
         }
     }
 
-    // 4. 汇总展示所有结果
+    // 4. 生成结果 HTML
     let resultHtml = `
         <div style="background: #f0f9ff; padding: 12px; border-radius: 8px; margin-bottom: 16px;">
             <div style="font-weight: 600;">📊 处理完成</div>
@@ -471,33 +460,92 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
     `;
 
-   allFields.forEach(field => {
-    const taskId = field.data.task_id;  // 确保后端返回中包含 task_id
-    resultHtml += `
-        <div style="margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
-            <div style="background: ${field.success ? '#f1f5f9' : '#fee2e2'}; padding: 8px 12px; font-weight: 600;">
-                📄 ${escapeHtml(field.fileName)} ${field.success ? '✅' : '❌'}
-            </div>
+    for (const field of allFields) {
+        if (!field.success) {
+            resultHtml += `
+                <div style="margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+                    <div style="background: #fee2e2; padding: 8px 12px; font-weight: 600;">📄 ${escapeHtml(field.fileName)} ❌</div>
+                    <div style="padding: 12px;">❌ 获取失败: ${escapeHtml(field.error)}</div>
+                </div>
+            `;
+            continue;
+        }
+
+        const data = field.data;
+        const taskId = data.task_id;
+        const pipeline = data.pipeline_used || 'unknown';
+        const parseSummary = data.parse_result_summary || {};
+        const extractResult = data.extract_result;
+        const matchResult = data.match_result;
+
+        // 解析摘要
+        let parseHtml = '';
+        if (parseSummary.paragraph_count || parseSummary.table_count) {
+            parseHtml = `
+                <details>
+                    <summary style="cursor:pointer; color:#3b82f6;">📄 文档解析摘要</summary>
+                    <div style="margin-top: 8px; background:#f8fafc; padding:8px; border-radius:8px;">
+                        <div>段落数: ${parseSummary.paragraph_count || 0}</div>
+                        <div>表格数: ${parseSummary.table_count || 0}</div>
+                        <div>文本预览: ${escapeHtml((parseSummary.raw_text_preview || '').slice(0, 200))}${(parseSummary.raw_text_preview || '').length > 200 ? '...' : ''}</div>
+                    </div>
+                </details>
+            `;
+        }
+
+        // 根据 pipeline 展示内容
+        let contentHtml = '';
+        if (pipeline === 'match' && matchResult && matchResult.match_status === 'success') {
+            const matched = matchResult.matched_result || {};
+            contentHtml = `
+                <div style="margin-top: 12px;">
+                    <div style="font-weight: 600;">🔗 字段标准化结果</div>
+                    <div style="background:#f1f5f9; padding:12px; border-radius:8px; margin-top:8px;">
+                       ${Object.entries(matched).map(([key, val]) => `
+                        <p><strong>${escapeHtml(String(key))}：</strong>
+                            <span class="source-field" data-task-id="${taskId}" data-field-name="${escapeHtml(String(key))}" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${escapeHtml(String(val))}</span>
+                        </p>
+                    `).join('')}
+                    </div>
+                </div>
+            `;
+        } else if (extractResult && extractResult.results && extractResult.results.length > 0) {
+            const results = extractResult.results;
+            contentHtml = `
+                <div style="margin-top: 12px;">
+                    <div style="font-weight: 600;">📊 指标抽取结果 (共 ${results.length} 项)</div>
+                    <div style="max-height: 300px; overflow-y: auto; margin-top: 8px;">
+                        ${results.slice(0, 20).map((item, idx) => `
+                        <div style="background:#f8fafc; padding:10px; border-radius:8px; margin-bottom:8px;">
+                            <div><strong>分类：</strong> ${escapeHtml(String(item.分类 || ''))}</div>
+                            <div><strong>指标：</strong> ${escapeHtml(String(item.指标 || ''))}</div>
+                            <div><strong>数值：</strong> ${escapeHtml(String(item.数值 || ''))}</div>
+                            <div><strong>单位：</strong> ${escapeHtml(String(item.单位 || ''))}</div>
+                            <div><strong>时间：</strong> ${escapeHtml(String(item.时间 || ''))}</div>
+                            <div><strong>同比：</strong> ${escapeHtml(String(item.同比 || ''))}</div>
+                            <div><strong>来源段落：</strong> ${escapeHtml(String(item.来源段落 || ''))}</div>
+                        </div>
+                    `).join('')}
+                        ${results.length > 20 ? `<div style="text-align:center; color:#64748b;">... 还有 ${results.length - 20} 项</div>` : ''}
+                    </div>
+                </div>
+            `;
+        } else {
+            contentHtml = `<div style="color:#64748b; margin-top:12px;">⚠️ 未提取到有效字段或指标</div>`;
+        }
+
+        resultHtml += `
+            <div style="margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+                <div style="background: #f1f5f9; padding: 8px 12px; font-weight: 600;">
+                    📄 ${escapeHtml(field.fileName)} ✅ (处理链路: ${pipeline})
+                </div>
                 <div style="padding: 12px;">
-                    ${field.success ? `
-                        <p><strong>任务ID：</strong><span class="source-field" data-task-id="${taskId}" data-field-name="task_id" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${field.data.task_id ?? ''}</p></span>
-                        <p><strong>文档ID：</strong><span class="source-field" data-task-id="${taskId}" data-field-name="doc_id" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${field.data.doc_id ?? ''}</p>
-                        <p><strong>文档类型：</strong> <span class="source-field" data-task-id="${taskId}" data-field-name="doc_type" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${field.data.doc_type ?? ''}</p>
-                        <p><strong>项目名称：</strong> <span class="source-field" data-task-id="${taskId}" data-field-name="project_name" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${field.data.project_name ?? ''}</p>
-                        <p><strong>项目负责人：</strong> <span class="source-field" data-task-id="${taskId}" data-field-name="project_leader" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${field.data.project_leader ?? ''}</p>
-                        <p><strong>机构名称：</strong> <span class="source-field" data-task-id="${taskId}" data-field-name="organization_name" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${field.data.organization_name ?? ''}</p>
-                        <p><strong>联系电话：</strong> <span class="source-field" data-task-id="${taskId}" data-field-name="phone" style="color:#2563eb; cursor:pointer; text-decoration:underline;">${field.data.phone ?? ''}</p>
-                        <details>
-                            <summary style="cursor:pointer; color:#3b82f6;">📄 查看原始文本摘要</summary>
-                            <pre style="white-space: pre-wrap; background:#f8fafc; padding:8px; border-radius:4px; margin-top:8px;">${escapeHtml((field.data.raw_text || '').slice(0, 500))}${(field.data.raw_text || '').length > 500 ? '...' : ''}</pre>
-                        </details>
-                    ` : `
-                        <div style="color: #b91c1c;">❌ 获取字段失败: ${escapeHtml(field.error)}</div>
-                    `}
+                    ${parseHtml}
+                    ${contentHtml}
                 </div>
             </div>
         `;
-    });
+    }
 
     resultContent.innerHTML = resultHtml;
     setStatus(`✅ 处理完成，成功 ${allFields.filter(f => f.success).length} 个文件`, 'success');

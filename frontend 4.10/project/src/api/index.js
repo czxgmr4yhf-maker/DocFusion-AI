@@ -101,35 +101,30 @@ export async function getTask(taskId) {
  */
 export async function getFields(taskId) {
     try {
-        const response = await fetch(`${BASE_URL}/fields/${taskId}`, {
-            method: 'GET'
-        });
-
+        const response = await fetch(`${BASE_URL}/fields/${taskId}`);
         const text = await response.text();
-        console.log('字段查询响应状态:', response.status);
-        console.log('字段查询响应原文:', text);
-
+        console.log(`[fields/${taskId}] 响应状态: ${response.status}, 内容长度: ${text.length}`);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${text}`);
+        }
+        
         let data;
         try {
             data = JSON.parse(text);
         } catch (e) {
-            throw new Error(`后端返回的不是合法 JSON：${text}`);
+            throw new Error(`JSON解析失败: ${e.message}, 原始内容: ${text.substring(0, 200)}`);
         }
-
-        if (!response.ok) {
-            throw new Error(`查询字段结果失败，状态码：${response.status}，响应：${text}`);
+        
+        // 如果后端返回了错误详情（例如任务不存在），也视为失败
+        if (data.detail) {
+            throw new Error(data.detail);
         }
-
-        return {
-            success: true,
-            data
-        };
+        
+        return { success: true, data };
     } catch (err) {
-        console.error('【查询字段结果失败】', err);
-        return {
-            success: false,
-            message: err.message || '查询字段结果失败'
-        };
+        console.error(`[getFields] 失败:`, err.message);
+        return { success: false, message: err.message };
     }
 }
 

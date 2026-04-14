@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import health, upload, tasks, parse, extract, fields,match
+from app.api import health, upload, tasks, parse, extract, fields,match,trace
 from app.core.logger import logger
 from app.db.database import init_db
 from app.db import models
@@ -16,6 +16,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(trace.router, tags=["trace"])
 
 init_db()
 

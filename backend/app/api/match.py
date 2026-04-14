@@ -38,13 +38,13 @@ def safe_load_json(text):
         return text
 
 
-def extract_kv_from_text_line(line: str, result: dict):
-    if not line:
-        return
-
-    text = str(line).strip()
+def extract_kv_pair(text: str):
     if not text:
-        return
+        return None, None
+
+    text = str(text).strip()
+    if not text:
+        return None, None
 
     text = text.lstrip("-•* ").strip()
 
@@ -54,38 +54,62 @@ def extract_kv_from_text_line(line: str, result: dict):
             key = key.strip()
             value = value.strip()
             if key and value:
-                result[key] = value
-            return
+                return key, value
+
+    return None, None
 
 
-def build_input_data_from_parse(parse_data: dict):
-    input_data = {}
+def build_input_items_from_parse(parse_data: dict):
+    """
+    同时保存 matcher 输入 + 溯源信息
+    """
+    items = []
 
     if not isinstance(parse_data, dict):
-        return input_data
+        return items
 
     paragraphs = parse_data.get("paragraphs", [])
     if isinstance(paragraphs, list):
-        for item in paragraphs:
-            if isinstance(item, str):
-                extract_kv_from_text_line(item, input_data)
+        for idx, item in enumerate(paragraphs):
+            if not isinstance(item, str):
+                continue
+            key, value = extract_kv_pair(item)
+            if key and value:
+                items.append({
+                    "source_key": key,
+                    "value": value,
+                    "source_paragraph": idx,
+                    "source_text": item
+                })
 
-    raw_text = parse_data.get("raw_text", "")
-    if raw_text and not input_data:
-        for line in str(raw_text).splitlines():
-            extract_kv_from_text_line(line, input_data)
+    # 如果 paragraphs 里没提出来，再退回 raw_text
+    if not items:
+        raw_text = parse_data.get("raw_text", "")
+        if raw_text:
+            for idx, line in enumerate(str(raw_text).splitlines()):
+                key, value = extract_kv_pair(line)
+                if key and value:
+                    items.append({
+                        "source_key": key,
+                        "value": value,
+                        "source_paragraph": idx,
+                        "source_text": line
+                    })
 
-    return input_data
+    return items
+
+
+def build_input_data_from_items(items: list):
+    result = {}
+    for item in items:
+        key = item.get("source_key")
+        value = item.get("value")
+        if key and value:
+            result[key] = value
+    return result
 
 
 def is_suitable_for_match(parse_data: dict, input_data: dict):
-    """
-    自动判断当前文件是否适合走 matcher。
-    规则：
-    1. 必须先能抽出一些 键:值
-    2. 更偏向短字段名、业务字段名、键值对密度高的文本
-    3. 对统计报告 / 表格 / 超长描述文本，倾向跳过 matcher
-    """
     if not input_data:
         return False, "当前文件不包含适合 matcher 处理的“字段名:字段值”键值对"
 
@@ -114,7 +138,6 @@ def is_suitable_for_match(parse_data: dict, input_data: dict):
 
     score = 0
 
-    # 正向信号
     if key_count >= 3:
         score += 2
     if short_key_count >= max(2, key_count // 2):
@@ -124,7 +147,6 @@ def is_suitable_for_match(parse_data: dict, input_data: dict):
     if avg_key_len <= 10:
         score += 1
 
-    # 负向信号：更像报告/表格/长文本
     if very_long_value_count >= max(1, key_count // 2):
         score -= 2
     if paragraph_count >= 30 and business_key_count == 0:
@@ -146,8 +168,58 @@ def build_skipped_result(reason: str, pipeline_used: str):
         "match_status": "skipped",
         "reason": reason,
         "input_data": {},
-        "matched_result": None
+        "matched_result": None,
+        "matched_trace_map": {}
     }
+
+
+def build_matched_trace_map(matched_result: dict, input_items: list):
+    """
+    给最终匹配结果补溯源信息：
+    标准字段名 -> 原始字段名/原始值/来源段落/原文
+    """
+    trace_map = {}
+
+    if not isinstance(matched_result, dict):
+        return trace_map
+
+    for std_field, matched_value in matched_result.items():
+        if matched_value in [None, ""]:
+            continue
+
+        target = str(matched_value).strip()
+        hit = None
+
+        # 先精确按 value 找
+        for item in input_items:
+            if str(item.get("value", "")).strip() == target:
+                hit = item
+                break
+
+        # 再宽松匹配
+        if hit is None:
+            for item in input_items:
+                item_value = str(item.get("value", "")).strip()
+                if target and item_value and (target in item_value or item_value in target):
+                    hit = item
+                    break
+
+        if hit is not None:
+            trace_map[std_field] = {
+                "source_key": hit.get("source_key"),
+                "value": hit.get("value"),
+                "source_paragraph": hit.get("source_paragraph"),
+                "source_text": hit.get("source_text")
+            }
+        else:
+            trace_map[std_field] = {
+                "source_key": None,
+                "value": matched_value,
+                "source_paragraph": None,
+                "source_text": None
+            }
+
+    return trace_map
 
 
 @router.post("/match/{task_id}")
@@ -163,7 +235,9 @@ def match_task(task_id: int, db: Session = Depends(get_db)):
     if not isinstance(parse_data, dict):
         raise HTTPException(status_code=500, detail="解析结果格式异常，无法执行 matcher")
 
-    input_data = build_input_data_from_parse(parse_data)
+    input_items = build_input_items_from_parse(parse_data)
+    input_data = build_input_data_from_items(input_items)
+
     suitable, reason = is_suitable_for_match(parse_data, input_data)
 
     if not suitable:
@@ -171,12 +245,13 @@ def match_task(task_id: int, db: Session = Depends(get_db)):
         skipped_result = build_skipped_result(reason, pipeline_used)
 
         task.match_result = json.dumps(skipped_result, ensure_ascii=False)
-        task.error_message = None
 
-        if task.extract_result:
-            task.status = "extracted"
-        else:
-            task.status = "parsed"
+        merged_result = dict(parse_data)
+        merged_result["match_result"] = skipped_result
+        task.result = json.dumps(merged_result, ensure_ascii=False)
+
+        task.error_message = None
+        task.status = "extracted" if task.extract_result else "parsed"
 
         db.commit()
         db.refresh(task)
@@ -192,16 +267,23 @@ def match_task(task_id: int, db: Session = Depends(get_db)):
 
     try:
         matched_result = matcher.process_data(input_data)
+        matched_trace_map = build_matched_trace_map(matched_result, input_items)
 
         save_data = {
             "pipeline_used": "match",
             "match_status": "success",
             "reason": None,
             "input_data": input_data,
-            "matched_result": matched_result
+            "matched_result": matched_result,
+            "matched_trace_map": matched_trace_map
         }
 
         task.match_result = json.dumps(save_data, ensure_ascii=False)
+
+        merged_result = dict(parse_data)
+        merged_result["match_result"] = save_data
+        task.result = json.dumps(merged_result, ensure_ascii=False)
+
         task.status = "matched"
         task.error_message = None
         db.commit()
